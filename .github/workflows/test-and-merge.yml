@@ -20,19 +20,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl jq
-          # 安装 yq v4（官方二进制）
           YQ_VERSION=v4.34.1
           wget https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64 -O /usr/local/bin/yq
           chmod +x /usr/local/bin/yq
-          yq --version
 
       - name: Test proxies and generate merged.yaml
-        id: generate
         run: |
           TEST_URL="https://github.com"
           TMP_DIR=$(mktemp -d)
-          PROXIES_FILE="$TMP_DIR/proxies.yaml"
-          > "$PROXIES_FILE"
+          OUTPUT_DIR="output"
+          OUTPUT_FILE="$OUTPUT_DIR/merged.yaml"
+
+          mkdir -p "$OUTPUT_DIR"
+          > "$TMP_DIR/proxies.yaml"
           valid_proxies=()
 
           echo "开始遍历 configs 目录下的所有 YAML 文件"
@@ -81,7 +81,7 @@ jobs:
 
               if curl $proxy_arg -I --connect-timeout 10 --max-time 15 "$TEST_URL" >/dev/null 2>&1; then
                 echo "  ✅ 代理 $name 可用"
-                yq e ".proxies[$i]" "$file" >> "$PROXIES_FILE"
+                yq e ".proxies[$i]" "$file" >> "$TMP_DIR/proxies.yaml"
                 valid_proxies+=("$name")
               else
                 echo "  ❌ 代理 $name 不可用"
@@ -89,11 +89,9 @@ jobs:
             done
           done
 
-          OUTPUT_FILE="merged.yaml"
-
           echo "# 合并后的 Clash 配置文件" > "$OUTPUT_FILE"
           echo "proxies:" >> "$OUTPUT_FILE"
-          cat "$PROXIES_FILE" >> "$OUTPUT_FILE"
+          cat "$TMP_DIR/proxies.yaml" >> "$OUTPUT_FILE"
 
           echo "proxy-groups:" >> "$OUTPUT_FILE"
           echo "  - name: \"Proxy\"" >> "$OUTPUT_FILE"
@@ -107,13 +105,12 @@ jobs:
           echo "rules:" >> "$OUTPUT_FILE"
           echo "  - MATCH,Proxy" >> "$OUTPUT_FILE"
 
-          echo "✅ 生成合并配置文件: $OUTPUT_FILE"
-          echo "::set-output name=file_created::$OUTPUT_FILE"
+          echo "✅ 合并配置文件已保存至 $OUTPUT_FILE"
 
       - name: Check if merged.yaml changed
         id: changed
         run: |
-          if git diff --quiet merged.yaml; then
+          if git diff --quiet output/merged.yaml; then
             echo "::set-output name=changed::false"
           else
             echo "::set-output name=changed::true"
@@ -123,9 +120,12 @@ jobs:
         if: steps.changed.outputs.changed == 'true'
         run: |
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+          git fetch origin
+          git checkout ${{ github.ref_name }}
+
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
 
-          git add merged.yaml
-          git commit -m "Auto update merged.yaml with valid proxies"
+          git add output/merged.yaml
+          git commit -m "Auto update output/merged.yaml with valid proxies"
           git push origin HEAD:${{ github.ref_name }}
