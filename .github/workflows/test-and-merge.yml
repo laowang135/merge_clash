@@ -5,7 +5,7 @@ on:
     branches:
       - main
   schedule:
-    - cron: '0 */2 * * *'  # 每两个小时执行一次
+    - cron: '0 */2 * * *' # 每2小时执行一次
   workflow_dispatch:
 
 jobs:
@@ -25,23 +25,20 @@ jobs:
         run: |
           pip install pyyaml requests yq clashmeta-launcher
 
-      - name: Create Temp Dir and Vars
+      - name: Create Temp Dir
         id: create_tmp
         run: |
           tmpdir=$(mktemp -d)
-          echo "tmpdir=$tmpdir" >> "$GITHUB_OUTPUT"
+          echo "tmpdir=$tmpdir" >> $GITHUB_ENV
 
       - name: Download Config List
-        id: download_list
         run: |
           curl -s -o config-list.txt https://raw.githubusercontent.com/${{ github.repository }}/main/config-list.txt
           echo "✅ Downloaded config-list.txt:"
           cat config-list.txt
 
       - name: Download YAML Files
-        id: download_files
         run: |
-          tmpdir="${{ steps.create_tmp.outputs.tmpdir }}"
           while IFS= read -r url; do
             [ -z "$url" ] && continue
             filename=$(basename "$url")
@@ -51,9 +48,7 @@ jobs:
 
       - name: Test Proxies & Merge Valid Ones
         run: |
-          TMP_DIR="${{ steps.create_tmp.outputs.tmpdir }}"
-
-          cat > "$TMP_DIR/template.yaml" << EOL
+          cat > "$tmpdir/template.yaml" << EOL
 # Merged Clash Config
 proxy-groups:
   - name: "Proxy"
@@ -66,7 +61,7 @@ EOL
 
           valid_proxies=()
 
-          for file in "$TMP_DIR"/*.yaml; do
+          for file in "$tmpdir"/*.yaml; do
             echo "=== Testing config: $file ==="
 
             proxy_name=$(grep -A 1 '^proxies:' "$file" | grep 'name:' | head -n1 | awk '{print $2}' | tr -d '"')
@@ -74,9 +69,9 @@ EOL
               proxy_name="Proxy-$(basename "$file")"
             fi
 
-            cp "$file" "$TMP_DIR/config.yaml"
+            cp "$file" "$tmpdir/config.yaml"
 
-            clashmeta -f "$TMP_DIR/config.yaml" -d "$TMP_DIR" &
+            clashmeta -f "$tmpdir/config.yaml" -d "$tmpdir" &
             clash_pid=$!
             sleep 10
 
@@ -86,7 +81,7 @@ EOL
             if curl -I --silent --connect-timeout 10 https://www.google.com | grep -q "200 OK"; then
               echo "✅ Proxy in $file works."
               valid_proxies+=("$proxy_name")
-              yq e ".proxies[]" "$TMP_DIR/config.yaml" >> "$TMP_DIR/proxies.yaml"
+              yq e ".proxies[]" "$tmpdir/config.yaml" >> "$tmpdir/proxies.yaml"
             else
               echo "❌ Proxy in $file does NOT work."
             fi
@@ -95,10 +90,10 @@ EOL
             sleep 2
           done
 
-          cat "$TMP_DIR/template.yaml" > merged-config.yaml
-          if [ -f "$TMP_DIR/proxies.yaml" ]; then
+          cat "$tmpdir/template.yaml" > merged-config.yaml
+          if [ -f "$tmpdir/proxies.yaml" ]; then
             echo "proxies:" >> merged-config.yaml
-            cat "$TMP_DIR/proxies.yaml" >> merged-config.yaml
+            cat "$tmpdir/proxies.yaml" >> merged-config.yaml
 
             echo "proxy-groups:" >> merged-config.yaml
             echo "  - name: Proxy" >> merged-config.yaml
