@@ -43,16 +43,14 @@ jobs:
 
       - name: Create Merged Config Template
         run: |
-          cat > "$TMP_DIR/template.yaml" <<EOF
-# Merged Clash Config
-proxy-groups:
-  - name: "Proxy"
-    type: select
-    proxies:
-      - DIRECT
-rules:
-  - MATCH,Proxy
-EOF
+          echo "# Merged Clash Config" > "$TMP_DIR/template.yaml"
+          echo "proxy-groups:" >> "$TMP_DIR/template.yaml"
+          echo "  - name: \"Proxy\"" >> "$TMP_DIR/template.yaml"
+          echo "    type: select" >> "$TMP_DIR/template.yaml"
+          echo "    proxies:" >> "$TMP_DIR/template.yaml"
+          echo "      - DIRECT" >> "$TMP_DIR/template.yaml"
+          echo "rules:" >> "$TMP_DIR/template.yaml"
+          echo "  - MATCH,Proxy" >> "$TMP_DIR/template.yaml"
 
       - name: Test Proxies and Merge Valid Ones
         run: |
@@ -76,7 +74,7 @@ EOF
             if curl -I --silent --connect-timeout 10 https://www.google.com | grep -q "200 OK"; then
               echo "✅ Proxy in $file works."
               valid_proxies+=("$proxy_name")
-              yq e ".proxies[] | select(.name == \"$proxy_name\")" "$TMP_DIR/config.yaml" >> "$TMPDIR/proxies.yaml"
+              yq e ".proxies[] | select(.name == \"$proxy_name\")" "$TMP_DIR/config.yaml" >> "$TMP_DIR/proxies.yaml"
             else
               echo "❌ Proxy in $file does NOT work."
             fi
@@ -86,6 +84,7 @@ EOF
           done
 
           cat "$TMP_DIR/template.yaml" > merged-config.yaml
+
           if [ -f "$TMP_DIR/proxies.yaml" ]; then
             echo "proxies:" >> merged-config.yaml
             cat "$TMP_DIR/proxies.yaml" >> merged-config.yaml
