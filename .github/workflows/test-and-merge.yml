@@ -16,108 +16,63 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up yq and curl
+      - name: Set up Python and Git
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl jq
-          YQ_VERSION=v4.34.1
-          wget https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64 -O /usr/local/bin/yq
-          chmod +x /usr/local/bin/yq
+          sudo apt-get install -y python3-pip git
 
-      - name: Test proxies and generate merged.yaml
+      - name: Install dependencies
         run: |
-          TEST_URL="https://github.com"
-          TMP_DIR=$(mktemp -d)
+          pip3 install requests
+
+      - name: Clone clash-speedtest
+        run: |
+          git clone https://github.com/faceair/clash-speedtest.git
+          cd clash-speedtest
+
+      - name: Prepare merged config file
+        run: |
           OUTPUT_DIR="output"
           OUTPUT_FILE="$OUTPUT_DIR/merged.yaml"
-
           mkdir -p "$OUTPUT_DIR"
-          > "$TMP_DIR/proxies.yaml"
-          valid_proxies=()
+          > "$OUTPUT_FILE"
 
           echo "开始遍历 configs 目录下的所有 YAML 文件"
           if [ ! -d "configs" ]; then
-            echo "❌ configs 目录不存在，跳过测试"
+            echo "❌ configs 目录不存在，跳过处理"
             exit 1
           fi
 
-          for file in configs/*.yaml; do
-            echo "=== 处理文件: $file ==="
+          yq eval-all '. as $item ireduce ({}; .proxies += $item.proxies )' configs/*.yaml > "$OUTPUT_FILE"
 
-            proxy_count=$(yq e '.proxies | length' "$file")
-            if [[ "$proxy_count" == "0" || "$proxy_count" == "null" ]]; then
-              echo "  文件无代理节点，跳过"
-              continue
-            fi
+      - name: Run clash-speedtest
+        working-directory: clash-speedtest
+        run: |
+          python3 speedtest.py -c ../output/merged.yaml --proxy http://localhost:7890 --threshold 200 > ../output/speedtest_result.yaml
 
-            for i in $(seq 0 $((proxy_count - 1))); do
-              name=$(yq e ".proxies[$i].name" "$file")
-              address=$(yq e ".proxies[$i].server // .proxies[$i].address" "$file")
-              port=$(yq e ".proxies[$i].port" "$file")
-              type=$(yq e ".proxies[$i].type" "$file")
-
-              if [[ -z "$address" || "$address" == "null" || -z "$port" || "$port" == "null" ]]; then
-                echo "  跳过代理 $name，缺少地址或端口"
-                continue
-              fi
-
-              echo "  测试代理节点 $name ($type $address:$port)"
-
-              case "$type" in
-                http)
-                  proxy_arg="--proxy http://$address:$port"
-                  ;;
-                socks5)
-                  proxy_arg="--socks5 $address:$port"
-                  ;;
-                socks5h)
-                  proxy_arg="--socks5-hostname $address:$port"
-                  ;;
-                *)
-                  echo "  不支持的代理类型 $type，跳过"
-                  continue
-                  ;;
-              esac
-
-              if curl $proxy_arg -I --connect-timeout 10 --max-time 15 "$TEST_URL" >/dev/null 2>&1; then
-                echo "  ✅ 代理 $name 可用"
-                yq e ".proxies[$i]" "$file" >> "$TMP_DIR/proxies.yaml"
-                valid_proxies+=("$name")
-              else
-                echo "  ❌ 代理 $name 不可用"
-              fi
-            done
-          done
-
+      - name: Generate final merged config
+        run: |
+          OUTPUT_FILE="output/final_merged.yaml"
           echo "# 合并后的 Clash 配置文件" > "$OUTPUT_FILE"
           echo "proxies:" >> "$OUTPUT_FILE"
-          cat "$TMP_DIR/proxies.yaml" >> "$OUTPUT_FILE"
+          yq e '.proxies[] | select(.delay != null and .delay < 200)' output/speedtest_result.yaml >> "$OUTPUT_FILE"
 
           echo "proxy-groups:" >> "$OUTPUT_FILE"
           echo "  - name: \"Proxy\"" >> "$OUTPUT_FILE"
           echo "    type: select" >> "$OUTPUT_FILE"
           echo "    proxies:" >> "$OUTPUT_FILE"
           echo "      - DIRECT" >> "$OUTPUT_FILE"
-          for p in "${valid_proxies[@]}"; do
+
+          mapfile -t proxy_names < <(yq e '.proxies[].name' output/speedtest_result.yaml | grep -v null)
+          for p in "${proxy_names[@]}"; do
             echo "      - $p" >> "$OUTPUT_FILE"
           done
 
           echo "rules:" >> "$OUTPUT_FILE"
           echo "  - MATCH,Proxy" >> "$OUTPUT_FILE"
 
-          echo "✅ 合并配置文件已保存至 $OUTPUT_FILE"
-
-      - name: Check if merged.yaml changed
-        id: changed
-        run: |
-          if git diff --quiet output/merged.yaml; then
-            echo "::set-output name=changed::false"
-          else
-            echo "::set-output name=changed::true"
-          fi
-
       - name: Commit and Push Merged File
-        if: steps.changed.outputs.changed == 'true'
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           git fetch origin
@@ -126,6 +81,6 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
 
-          git add output/merged.yaml
-          git commit -m "Auto update output/merged.yaml with valid proxies"
+          git add output/final_merged.yaml
+          git commit -m "Auto update output/final_merged.yaml with valid proxies"
           git push origin HEAD:${{ github.ref_name }}
