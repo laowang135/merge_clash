@@ -23,15 +23,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pyyaml requests clashmeta-launcher yq
+          pip install pyyaml requests yq clashmeta-launcher
 
-      - name: Create Temp Dir and Time Vars
+      - name: Create Temp Dir and Vars
         id: create_tmp
         run: |
           tmpdir=$(mktemp -d)
-          date_short=$(date '+%Y%m%d')
           echo "tmpdir=$tmpdir" >> "$GITHUB_OUTPUT"
-          echo "date_short=$date_short" >> "$GITHUB_OUTPUT"
 
       - name: Download Config List
         id: download_list
@@ -47,8 +45,8 @@ jobs:
           while IFS= read -r url; do
             [ -z "$url" ] && continue
             filename=$(basename "$url")
+            echo "Downloading $filename ..."
             curl -s -o "$tmpdir/$filename" "$url"
-            echo "Downloaded $filename"
           done < config-list.txt
 
       - name: Test Proxies & Merge Valid Ones
@@ -88,7 +86,7 @@ EOL
             if curl -I --silent --connect-timeout 10 https://www.google.com | grep -q "200 OK"; then
               echo "✅ Proxy in $file works."
               valid_proxies+=("$proxy_name")
-              yq e ".proxies[] | select(.name == \"$proxy_name\")" "$TMP_DIR/config.yaml" >> "$TMP_DIR/proxies.yaml"
+              yq e ".proxies[]" "$TMP_DIR/config.yaml" >> "$TMP_DIR/proxies.yaml"
             else
               echo "❌ Proxy in $file does NOT work."
             fi
@@ -102,6 +100,7 @@ EOL
             echo "proxies:" >> merged-config.yaml
             cat "$TMP_DIR/proxies.yaml" >> merged-config.yaml
 
+            echo "proxy-groups:" >> merged-config.yaml
             echo "  - name: Proxy" >> merged-config.yaml
             echo "    type: select" >> merged-config.yaml
             echo "    proxies:" >> merged-config.yaml
