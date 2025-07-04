@@ -1,4 +1,4 @@
-name: Test and Merge Clash Proxies
+name: Test and Merge Clash Proxies Per File
 
 on:
   push:
@@ -11,6 +11,8 @@ on:
 jobs:
   test-and-merge:
     runs-on: ubuntu-latest
+    env:
+      TEST_SERVER_URL: "https://speed.cloudflare.com"  # 自定义测速服务器地址
 
     steps:
       - name: Checkout code
@@ -24,31 +26,49 @@ jobs:
       - name: Setup Go environment
         uses: actions/setup-go@v4
         with:
-          go-version: '1.20'
+          go-version: '1.24'
 
       - name: Install clash-speedtest binary
         run: |
           go install github.com/faceair/clash-speedtest@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
-      - name: Merge all proxies from configs/*.yaml into merged.yaml
-        run: |
-          mkdir -p output
-          if [ ! -d "configs" ]; then
-            echo "❌ configs 目录不存在，跳过处理"
-            exit 1
-          fi
-          yq eval-all '. as $item ireduce ({}; .proxies += $item.proxies )' configs/*.yaml > output/merged.yaml
+      - name: Prepare output directory
+        run: mkdir -p output/filtered
 
-      - name: Run clash-speedtest to test proxies and filter results
+      - name: List config YAML files
+        id: listfiles
         run: |
-          clash-speedtest \
-            -c output/merged.yaml \
-            -output output/final_merged.yaml \
-            -max-latency 200ms \
-            -min-download-speed 1 \
-            -timeout 5s \
-            -rename
+          files=$(ls configs/*.yaml 2>/dev/null || echo "")
+          echo "files=$files" >> $GITHUB_OUTPUT
+
+      - name: Test each config and filter proxies
+        run: |
+          if [ -z "${{ steps.listfiles.outputs.files }}" ]; then
+            echo "No config files found, skipping."
+            exit 0
+          fi
+          for file in ${{ steps.listfiles.outputs.files }}; do
+            echo "Processing $file"
+            base=$(basename "$file" .yaml)
+            clash-speedtest \
+              -c "$file" \
+              -output "output/filtered/${base}_filtered.yaml" \
+              -server-url "${TEST_SERVER_URL}" \
+              -max-latency 200ms \
+              -min-download-speed 1 \
+              -timeout 5s \
+              -rename
+          done
+
+      - name: Merge all filtered proxies into merged.yaml
+        run: |
+          if ls output/filtered/*_filtered.yaml 1> /dev/null 2>&1; then
+            yq eval-all '. as $item ireduce ({}; .proxies += $item.proxies )' output/filtered/*_filtered.yaml > output/merged.yaml
+          else
+            echo "No filtered proxy files found. Creating empty merged.yaml."
+            echo "proxies: []" > output/merged.yaml
+          fi
 
       - name: Commit and Push Merged File
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -60,6 +80,6 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
 
-          git add output/final_merged.yaml
-          git diff --cached --quiet || git commit -m "Auto update output/final_merged.yaml with valid proxies"
+          git add output/merged.yaml
+          git diff --cached --quiet || git commit -m "Auto update output/merged.yaml with valid proxies"
           git push origin HEAD:${{ github.ref_name }}
