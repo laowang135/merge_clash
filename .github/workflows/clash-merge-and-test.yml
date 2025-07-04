@@ -40,7 +40,8 @@ jobs:
         id: listfiles
         run: |
           files=$(ls configs/*.yaml 2>/dev/null || echo "")
-          echo "files=$files" >> $GITHUB_OUTPUT
+          files_one_line=$(echo $files | tr '\n' ' ' | sed 's/  */ /g' | xargs)
+          echo "files=$files_one_line" >> $GITHUB_OUTPUT
 
       - name: Test each config and filter proxies
         run: |
