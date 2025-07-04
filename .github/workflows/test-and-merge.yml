@@ -33,21 +33,17 @@ jobs:
       - name: Download Config List
         run: |
           curl -s -o config-list.txt https://raw.githubusercontent.com/${{ github.repository }}/main/config-list.txt
-          echo "✅ Downloaded config-list.txt:"
-          cat config-list.txt
 
-      - name: Download YAML Files
+      - name: Download All Configs
         run: |
           while IFS= read -r url; do
-            [ -z "$url" ] && continue
             filename=$(basename "$url")
-            echo "Downloading $filename ..."
             curl -s -o "$TMP_DIR/$filename" "$url"
           done < config-list.txt
 
-      - name: Test Proxies & Merge Valid Ones
+      - name: Create Merged Config Template
         run: |
-          cat > "$TMP_DIR/template.yaml" << EOF
+          cat > "$TMP_DIR/template.yaml" <<EOF
 # Merged Clash Config
 proxy-groups:
   - name: "Proxy"
@@ -58,15 +54,15 @@ rules:
   - MATCH,Proxy
 EOF
 
+      - name: Test Proxies and Merge Valid Ones
+        run: |
           valid_proxies=()
 
           for file in "$TMP_DIR"/*.yaml; do
             echo "=== Testing config: $file ==="
 
-            proxy_name=$(grep -A 1 '^proxies:' "$file" | grep 'name:' | head -n1 | awk '{print $2}' | tr -d '"')
-            if [ -z "$proxy_name" ]; then
-              proxy_name="Proxy-$(basename "$file")"
-            fi
+            proxy_name=$(yq e '.proxies[0].name' "$file")
+            [ -z "$proxy_name" ] && proxy_name="Proxy-$(basename "$file")"
 
             cp "$file" "$TMP_DIR/config.yaml"
 
@@ -80,7 +76,7 @@ EOF
             if curl -I --silent --connect-timeout 10 https://www.google.com | grep -q "200 OK"; then
               echo "✅ Proxy in $file works."
               valid_proxies+=("$proxy_name")
-              yq e ".proxies[]" "$TMP_DIR/config.yaml" >> "$TMP_DIR/proxies.yaml"
+              yq e ".proxies[] | select(.name == \"$proxy_name\")" "$TMP_DIR/config.yaml" >> "$TMPDIR/proxies.yaml"
             else
               echo "❌ Proxy in $file does NOT work."
             fi
@@ -95,9 +91,10 @@ EOF
             cat "$TMP_DIR/proxies.yaml" >> merged-config.yaml
 
             echo "proxy-groups:" >> merged-config.yaml
-            echo "  - name: Proxy" >> merged-config.yaml
+            echo "  - name: \"Proxy\"" >> merged-config.yaml
             echo "    type: select" >> merged-config.yaml
             echo "    proxies:" >> merged-config.yaml
+            echo "      - DIRECT" >> merged-config.yaml
 
             for name in "${valid_proxies[@]}"; do
               echo "      - $name" >> merged-config.yaml
@@ -108,13 +105,3 @@ EOF
 
           echo "✅ Final merged config saved to merged-config.yaml"
           cat merged-config.yaml
-
-      - name: Commit and Push Merged Config
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add merged-config.yaml
-          git commit -m "Update merged clash config $(date '+%Y-%m-%d %H:%M:%S')" || echo "Nothing to commit"
-          git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
