@@ -47,7 +47,7 @@ jobs:
 
       - name: Test Proxies & Merge Valid Ones
         run: |
-          cat > "$TMP_DIR/template.yaml" << EOL
+          cat > "$TMP_DIR/template.yaml" << EOF
 # Merged Clash Config
 proxy-groups:
   - name: "Proxy"
@@ -56,7 +56,7 @@ proxy-groups:
       - DIRECT
 rules:
   - MATCH,Proxy
-EOL
+EOF
 
           valid_proxies=()
 
