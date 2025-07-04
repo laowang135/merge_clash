@@ -5,7 +5,7 @@ on:
     branches:
       - main
   schedule:
-    - cron: '0 */2 * * *' # 每两个小时
+    - cron: '0 */2 * * *'  # 每两个小时执行一次
   workflow_dispatch:
 
 jobs:
@@ -23,45 +23,39 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pyyaml requests clashmeta-launcher
+          pip install pyyaml requests clashmeta-launcher yq
 
       - name: Create Temp Dir and Time Vars
         id: create_tmp
         run: |
           tmpdir=$(mktemp -d)
           date_short=$(date '+%Y%m%d')
-          echo "tmpdir=$tmpdir" >> $GITHUB_OUTPUT
-          echo "date_short=$date_short" >> $GITHUB_OUTPUT
+          echo "tmpdir=$tmpdir" >> "$GITHUB_OUTPUT"
+          echo "date_short=$date_short" >> "$GITHUB_OUTPUT"
 
-      - name: Read Config URLs and Download Files
-        env:
-          TMP_DIR: ${{ steps.create_tmp.outputs.tmpdir }}
+      - name: Download Config List
+        id: download_list
         run: |
-          cd "$TMP_DIR"
-          while read url; do
+          curl -s -o config-list.txt https://raw.githubusercontent.com/${{ github.repository }}/main/config-list.txt
+          echo "✅ Downloaded config-list.txt:"
+          cat config-list.txt
+
+      - name: Download YAML Files
+        id: download_files
+        run: |
+          tmpdir="${{ steps.create_tmp.outputs.tmpdir }}"
+          while IFS= read -r url; do
             [ -z "$url" ] && continue
             filename=$(basename "$url")
-            echo "Downloading $filename from $url"
-            curl -sSL -o "$filename" "$url"
-            if [ ! -s "$filename" ]; then
-              echo "❌ Download failed or empty: $url"
-              exit 1
-            else
-              echo "✅ Downloaded: $filename"
-              echo "$filename" >> "$GITHUB_WORKSPACE/file_list.txt"
-            fi
-          done < "$GITHUB_WORKSPACE/config-list.txt"
+            curl -s -o "$tmpdir/$filename" "$url"
+            echo "Downloaded $filename"
+          done < config-list.txt
 
-      - name: Test and Merge Configs
-        env:
-          TMP_DIR: ${{ steps.create_tmp.outputs.tmpdir }}
-          DATE_SHORT: ${{ steps.create_tmp.outputs.date_short }}
+      - name: Test Proxies & Merge Valid Ones
         run: |
-          cd "$TMP_DIR"
-          OUTPUT="${DATE_SHORT}.yaml"
-          README="${DATE_SHORT}.md"
+          TMP_DIR="${{ steps.create_tmp.outputs.tmpdir }}"
 
-          cat > template.yaml << EOL
+          cat > "$TMP_DIR/template.yaml" << EOL
 # Merged Clash Config
 proxy-groups:
   - name: "Proxy"
@@ -72,14 +66,19 @@ rules:
   - MATCH,Proxy
 EOL
 
-          declare -A unique_proxies
           valid_proxies=()
 
-          while read filename; do
-            echo "=== Testing $filename ==="
-            cp "$filename" config.yaml
+          for file in "$TMP_DIR"/*.yaml; do
+            echo "=== Testing config: $file ==="
 
-            clashmeta -f config.yaml -d "$TMP_DIR" &
+            proxy_name=$(grep -A 1 '^proxies:' "$file" | grep 'name:' | head -n1 | awk '{print $2}' | tr -d '"')
+            if [ -z "$proxy_name" ]; then
+              proxy_name="Proxy-$(basename "$file")"
+            fi
+
+            cp "$file" "$TMP_DIR/config.yaml"
+
+            clashmeta -f "$TMP_DIR/config.yaml" -d "$TMP_DIR" &
             clash_pid=$!
             sleep 10
 
@@ -87,60 +86,42 @@ EOL
             export https_proxy="http://127.0.0.1:7890"
 
             if curl -I --silent --connect-timeout 10 https://www.google.com | grep -q "200 OK"; then
-              echo "✅ $filename works."
-              yq '.proxies[].name' config.yaml | while read -r proxy_name; do
-                if [[ -z "${unique_proxies[$proxy_name]}" ]]; then
-                  unique_proxies["$proxy_name"]=1
-                  valid_proxies+=("$proxy_name")
-                  yq '.proxies[] | select(.name == "'"$proxy_name"'")' config.yaml >> proxies.yaml
-                fi
-              done
+              echo "✅ Proxy in $file works."
+              valid_proxies+=("$proxy_name")
+              yq e ".proxies[] | select(.name == \"$proxy_name\")" "$TMP_DIR/config.yaml" >> "$TMP_DIR/proxies.yaml"
             else
-              echo "❌ $filename does NOT work."
+              echo "❌ Proxy in $file does NOT work."
             fi
 
             kill $clash_pid || true
             sleep 2
+          done
 
-          done < "$GITHUB_WORKSPACE/file_list.txt"
+          cat "$TMP_DIR/template.yaml" > merged-config.yaml
+          if [ -f "$TMP_DIR/proxies.yaml" ]; then
+            echo "proxies:" >> merged-config.yaml
+            cat "$TMP_DIR/proxies.yaml" >> merged-config.yaml
 
-          cat template.yaml > "$GITHUB_WORKSPACE/$OUTPUT"
-
-          if [ -f proxies.yaml ]; then
-            echo "proxies:" >> "$GITHUB_WORKSPACE/$OUTPUT"
-            cat proxies.yaml >> "$GITHUB_WORKSPACE/$OUTPUT"
-
-            echo "proxy-groups:" >> "$GITHUB_WORKSPACE/$OUTPUT"
-            echo "  - name: \"Proxy\"" >> "$GITHUB_WORKSPACE/$OUTPUT"
-            echo "    type: select" >> "$GITHUB_WORKSPACE/$OUTPUT"
-            echo "    proxies:" >> "$GITHUB_WORKSPACE/$OUTPUT"
-            echo "      - DIRECT" >> "$GITHUB_WORKSPACE/$OUTPUT"
+            echo "  - name: Proxy" >> merged-config.yaml
+            echo "    type: select" >> merged-config.yaml
+            echo "    proxies:" >> merged-config.yaml
 
             for name in "${valid_proxies[@]}"; do
-              echo "      - \"$name\"" >> "$GITHUB_WORKSPACE/$OUTPUT"
+              echo "      - $name" >> merged-config.yaml
             done
           else
-            echo "proxies: []" >> "$GITHUB_WORKSPACE/$OUTPUT"
+            echo "proxies: []" >> merged-config.yaml
           fi
 
-          echo "✅ Final merged config saved to $OUTPUT"
+          echo "✅ Final merged config saved to merged-config.yaml"
+          cat merged-config.yaml
 
-          echo "# Valid Proxies" > "$GITHUB_WORKSPACE/$README"
-          echo "" >> "$GITHUB_WORKSPACE/$README"
-          echo "| Proxy Name |" >> "$GITHUB_WORKSPACE/$README"
-          echo "|------------|" >> "$GITHUB_WORKSPACE/$README"
-          for name in "${valid_proxies[@]}"; do
-            echo "| $name |" >> "$GITHUB_WORKSPACE/$README"
-          done
-          echo "" >> "$GITHUB_WORKSPACE/$README"
-          echo "⏰ Last Update: $(date '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_WORKSPACE/$README"
-
-      - name: Commit and Push Merged File
-        env:
-          DATE_SHORT: ${{ steps.create_tmp.outputs.date_short }}
+      - name: Commit and Push Merged Config
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add "${DATE_SHORT}.yaml" "${DATE_SHORT}.md"
-          git commit -m "Update merged clash config ${DATE_SHORT}" || echo "Nothing to commit"
+          git add merged-config.yaml
+          git commit -m "Update merged clash config $(date '+%Y-%m-%d %H:%M:%S')" || echo "Nothing to commit"
           git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
