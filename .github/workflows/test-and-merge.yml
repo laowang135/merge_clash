@@ -26,10 +26,9 @@ jobs:
           pip install pyyaml requests yq clashmeta-launcher
 
       - name: Create Temp Dir
-        id: create_tmp
         run: |
           tmpdir=$(mktemp -d)
-          echo "tmpdir=$tmpdir" >> $GITHUB_ENV
+          echo "TMP_DIR=$tmpdir" >> $GITHUB_ENV
 
       - name: Download Config List
         run: |
@@ -43,12 +42,12 @@ jobs:
             [ -z "$url" ] && continue
             filename=$(basename "$url")
             echo "Downloading $filename ..."
-            curl -s -o "$tmpdir/$filename" "$url"
+            curl -s -o "$TMP_DIR/$filename" "$url"
           done < config-list.txt
 
       - name: Test Proxies & Merge Valid Ones
         run: |
-          cat > "$tmpdir/template.yaml" << EOL
+          cat > "$TMP_DIR/template.yaml" << EOL
 # Merged Clash Config
 proxy-groups:
   - name: "Proxy"
@@ -61,7 +60,7 @@ EOL
 
           valid_proxies=()
 
-          for file in "$tmpdir"/*.yaml; do
+          for file in "$TMP_DIR"/*.yaml; do
             echo "=== Testing config: $file ==="
 
             proxy_name=$(grep -A 1 '^proxies:' "$file" | grep 'name:' | head -n1 | awk '{print $2}' | tr -d '"')
@@ -69,9 +68,9 @@ EOL
               proxy_name="Proxy-$(basename "$file")"
             fi
 
-            cp "$file" "$tmpdir/config.yaml"
+            cp "$file" "$TMP_DIR/config.yaml"
 
-            clashmeta -f "$tmpdir/config.yaml" -d "$tmpdir" &
+            clashmeta -f "$TMP_DIR/config.yaml" -d "$TMP_DIR" &
             clash_pid=$!
             sleep 10
 
@@ -81,7 +80,7 @@ EOL
             if curl -I --silent --connect-timeout 10 https://www.google.com | grep -q "200 OK"; then
               echo "✅ Proxy in $file works."
               valid_proxies+=("$proxy_name")
-              yq e ".proxies[]" "$tmpdir/config.yaml" >> "$tmpdir/proxies.yaml"
+              yq e ".proxies[]" "$TMP_DIR/config.yaml" >> "$TMP_DIR/proxies.yaml"
             else
               echo "❌ Proxy in $file does NOT work."
             fi
@@ -90,10 +89,10 @@ EOL
             sleep 2
           done
 
-          cat "$tmpdir/template.yaml" > merged-config.yaml
-          if [ -f "$tmpdir/proxies.yaml" ]; then
+          cat "$TMP_DIR/template.yaml" > merged-config.yaml
+          if [ -f "$TMP_DIR/proxies.yaml" ]; then
             echo "proxies:" >> merged-config.yaml
-            cat "$tmpdir/proxies.yaml" >> merged-config.yaml
+            cat "$TMP_DIR/proxies.yaml" >> merged-config.yaml
 
             echo "proxy-groups:" >> merged-config.yaml
             echo "  - name: Proxy" >> merged-config.yaml
