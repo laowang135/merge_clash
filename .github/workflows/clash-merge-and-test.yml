@@ -56,7 +56,7 @@ jobs:
               -c "$file" \
               -output "output/filtered/${base}_filtered.yaml" \
               -server-url "${TEST_SERVER_URL}" \
-              -max-latency 200ms \
+              -max-latency 3000ms \
               -min-download-speed 1 \
               -timeout 5s \
               -rename
