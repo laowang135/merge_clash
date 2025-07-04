@@ -1,11 +1,11 @@
-name: Test and Merge Clash Configs
+name: Test and Merge Clash Proxies
 
 on:
   push:
     branches:
       - main
   schedule:
-    - cron: '0 */2 * * *' # 每2小时执行一次
+    - cron: '0 */2 * * *'  # 每2小时执行一次
   workflow_dispatch:
 
 jobs:
@@ -13,94 +13,100 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install Dependencies
+      - name: Set up yq and curl
         run: |
-          pip install pyyaml requests yq clashmeta-launcher
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+          # 安装 yq v4（官方二进制）
+          YQ_VERSION=v4.34.1
+          wget https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64 -O /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+          yq --version
 
-      - name: Create Temp Dir
+      - name: Test proxies and generate merged.yaml
         run: |
-          tmpdir=$(mktemp -d)
-          echo "TMP_DIR=$tmpdir" >> $GITHUB_ENV
-
-      - name: Download Config List
-        run: |
-          curl -s -o config-list.txt https://raw.githubusercontent.com/${{ github.repository }}/main/config-list.txt
-
-      - name: Download All Configs
-        run: |
-          while IFS= read -r url; do
-            filename=$(basename "$url")
-            curl -s -o "$TMP_DIR/$filename" "$url"
-          done < config-list.txt
-
-      - name: Create Merged Config Template
-        run: |
-          echo "# Merged Clash Config" > "$TMP_DIR/template.yaml"
-          echo "proxy-groups:" >> "$TMP_DIR/template.yaml"
-          echo "  - name: \"Proxy\"" >> "$TMP_DIR/template.yaml"
-          echo "    type: select" >> "$TMP_DIR/template.yaml"
-          echo "    proxies:" >> "$TMP_DIR/template.yaml"
-          echo "      - DIRECT" >> "$TMP_DIR/template.yaml"
-          echo "rules:" >> "$TMP_DIR/template.yaml"
-          echo "  - MATCH,Proxy" >> "$TMP_DIR/template.yaml"
-
-      - name: Test Proxies and Merge Valid Ones
-        run: |
+          TEST_URL="https://github.com"
+          TMP_DIR=$(mktemp -d)
+          PROXIES_FILE="$TMP_DIR/proxies.yaml"
+          > "$PROXIES_FILE"
           valid_proxies=()
 
-          for file in "$TMP_DIR"/*.yaml; do
-            echo "=== Testing config: $file ==="
+          echo "开始遍历 configs 目录下的所有 YAML 文件"
+          for file in configs/*.yaml; do
+            echo "=== 处理文件: $file ==="
 
-            proxy_name=$(yq e '.proxies[0].name' "$file")
-            [ -z "$proxy_name" ] && proxy_name="Proxy-$(basename "$file")"
-
-            cp "$file" "$TMP_DIR/config.yaml"
-
-            clashmeta -f "$TMP_DIR/config.yaml" -d "$TMP_DIR" &
-            clash_pid=$!
-            sleep 10
-
-            export http_proxy="http://127.0.0.1:7890"
-            export https_proxy="http://127.0.0.1:7890"
-
-            if curl -I --silent --connect-timeout 10 https://www.google.com | grep -q "200 OK"; then
-              echo "✅ Proxy in $file works."
-              valid_proxies+=("$proxy_name")
-              yq e ".proxies[] | select(.name == \"$proxy_name\")" "$TMP_DIR/config.yaml" >> "$TMP_DIR/proxies.yaml"
-            else
-              echo "❌ Proxy in $file does NOT work."
+            proxy_count=$(yq e '.proxies | length' "$file")
+            if [[ "$proxy_count" == "0" ]]; then
+              echo "  文件无代理节点，跳过"
+              continue
             fi
 
-            kill $clash_pid || true
-            sleep 2
+            for i in $(seq 0 $((proxy_count - 1))); do
+              name=$(yq e ".proxies[$i].name" "$file")
+              address=$(yq e ".proxies[$i].server // .proxies[$i].address" "$file")
+              port=$(yq e ".proxies[$i].port" "$file")
+              type=$(yq e ".proxies[$i].type" "$file")
+
+              if [[ -z "$address" || "$address" == "null" || -z "$port" || "$port" == "null" ]]; then
+                echo "  跳过代理 $name，缺少地址或端口"
+                continue
+              fi
+
+              echo "  测试代理节点 $name ($type $address:$port)"
+
+              # 根据代理类型选择 curl 代理参数，支持 http, socks5, socks5h
+              case "$type" in
+                http)
+                  proxy_arg="--proxy http://$address:$port"
+                  ;;
+                socks5)
+                  proxy_arg="--socks5 $address:$port"
+                  ;;
+                socks5h)
+                  proxy_arg="--socks5-hostname $address:$port"
+                  ;;
+                *)
+                  echo "  不支持的代理类型 $type，跳过"
+                  continue
+                  ;;
+              esac
+
+              if curl $proxy_arg -I --connect-timeout 10 --max-time 15 "$TEST_URL" >/dev/null 2>&1; then
+                echo "  ✅ 代理 $name 可用"
+                yq e ".proxies[$i]" "$file" >> "$PROXIES_FILE"
+                valid_proxies+=("$name")
+              else
+                echo "  ❌ 代理 $name 不可用"
+              fi
+            done
           done
 
-          cat "$TMP_DIR/template.yaml" > merged-config.yaml
+          OUTPUT_FILE="merged.yaml"
+          echo "# 合并后的 Clash 配置文件" > "$OUTPUT_FILE"
+          echo "proxies:" >> "$OUTPUT_FILE"
+          cat "$PROXIES_FILE" >> "$OUTPUT_FILE"
 
-          if [ -f "$TMP_DIR/proxies.yaml" ]; then
-            echo "proxies:" >> merged-config.yaml
-            cat "$TMP_DIR/proxies.yaml" >> merged-config.yaml
+          echo "proxy-groups:" >> "$OUTPUT_FILE"
+          echo "  - name: \"Proxy\"" >> "$OUTPUT_FILE"
+          echo "    type: select" >> "$OUTPUT_FILE"
+          echo "    proxies:" >> "$OUTPUT_FILE"
+          echo "      - DIRECT" >> "$OUTPUT_FILE"
+          for p in "${valid_proxies[@]}"; do
+            echo "      - $p" >> "$OUTPUT_FILE"
+          done
 
-            echo "proxy-groups:" >> merged-config.yaml
-            echo "  - name: \"Proxy\"" >> merged-config.yaml
-            echo "    type: select" >> merged-config.yaml
-            echo "    proxies:" >> merged-config.yaml
-            echo "      - DIRECT" >> merged-config.yaml
+          echo "rules:" >> "$OUTPUT_FILE"
+          echo "  - MATCH,Proxy" >> "$OUTPUT_FILE"
 
-            for name in "${valid_proxies[@]}"; do
-              echo "      - $name" >> merged-config.yaml
-            done
-          else
-            echo "proxies: []" >> merged-config.yaml
-          fi
+          echo "✅ 生成合并配置文件: $OUTPUT_FILE"
 
-          echo "✅ Final merged config saved to merged-config.yaml"
-          cat merged-config.yaml
+      - name: Commit and push merged.yaml
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add merged.yaml
+          git commit -m "Auto update merged.yaml with valid proxies" || echo "No changes to commit"
+          git push
