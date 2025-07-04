@@ -1,4 +1,4 @@
-name: Test and Merge Clash Proxies
+name: Clash - Merge & Test Proxies
 
 on:
   push:
@@ -21,38 +21,54 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3-pip git
 
-      - name: Install dependencies
+      - name: Install yq
         run: |
-          pip3 install requests
+          sudo wget -O /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
 
       - name: Clone clash-speedtest
         run: |
           git clone https://github.com/faceair/clash-speedtest.git
-          cd clash-speedtest
 
-      - name: Prepare merged config file
+      - name: Debug: Check files
         run: |
-          OUTPUT_DIR="output"
-          OUTPUT_FILE="$OUTPUT_DIR/merged.yaml"
-          mkdir -p "$OUTPUT_DIR"
-          > "$OUTPUT_FILE"
+          ls -la clash-speedtest/
 
-          echo "开始遍历 configs 目录下的所有 YAML 文件"
-          if [ ! -d "configs" ]; then
-            echo "❌ configs 目录不存在，跳过处理"
+      - name: Install dependencies
+        run: |
+          pip3 install requests
+
+      - name: Merge all proxies into merged.yaml
+        run: |
+          mkdir -p output
+          if [ "$(ls -A configs/*.yaml 2>/dev/null)" ]; then
+            echo "开始合并所有 YAML 文件"
+            yq eval-all '. as $item ireduce ({}; .proxies += $item.proxies )' configs/*.yaml > output/merged.yaml
+          else
+            echo "❌ configs 目录中没有 YAML 文件"
             exit 1
           fi
 
-          yq eval-all '. as $item ireduce ({}; .proxies += $item.proxies )' configs/*.yaml > "$OUTPUT_FILE"
+      - name: Start Clash in background
+        run: |
+          wget https://github.com/Dreamacro/clash/releases/download/v1.19.0/clash-linux-amd64-v1.19.0.gz
+          gunzip clash-linux-amd64-v1.19.0.gz
+          chmod +x clash-linux-amd64-v1.19.0
+          sudo mv clash-linux-amd64-v1.19.0 /usr/local/bin/clash
+          mkdir -p ~/.config/clash/
+          cp output/merged.yaml ~/.config/clash/config.yaml
+          nohup clash -d ~/.config/clash/ > /tmp/clash.log 2>&1 &
+          sleep 5  # 等待 Clash 启动完成
 
       - name: Run clash-speedtest
         working-directory: clash-speedtest
         run: |
           python3 speedtest.py -c ../output/merged.yaml --proxy http://localhost:7890 --threshold 200 > ../output/speedtest_result.yaml
 
-      - name: Generate final merged config
+      - name: Generate final config with valid proxies
         run: |
           OUTPUT_FILE="output/final_merged.yaml"
+
           echo "# 合并后的 Clash 配置文件" > "$OUTPUT_FILE"
           echo "proxies:" >> "$OUTPUT_FILE"
           yq e '.proxies[] | select(.delay != null and .delay < 200)' output/speedtest_result.yaml >> "$OUTPUT_FILE"
