@@ -11,18 +11,18 @@ on:
 jobs:
   test-and-merge:
     runs-on: ubuntu-latest
+
     env:
-      TEST_SERVER_URL: "https://speed.cloudflare.com"  # 自定义测速服务器地址
+      TEST_SERVER_URL: "https://speed.cloudflare.com"
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up working directory
+      - name: Show working directory
         run: |
           echo "当前工作目录：$(pwd)"
-          cd $GITHUB_WORKSPACE
-          echo "已切换到仓库根目录"
+          echo "仓库路径：$GITHUB_WORKSPACE"
 
       - name: Install yq for YAML processing
         run: |
@@ -44,33 +44,37 @@ jobs:
       - name: Prepare output directory
         run: |
           mkdir -p output/filtered
-          echo "output/filtered 目录已创建"
+          echo "✅ 已创建 output/filtered 目录"
 
       - name: List config YAML files
         id: listfiles
         run: |
+          echo "👉 当前 configs/ 下文件："
+          ls -la configs/ || echo "configs/ 文件夹不存在"
+
           files=$(ls configs/*.yaml 2>/dev/null || echo "")
           if [ -z "$files" ]; then
-            echo "No config files found"
+            echo "⚠️ 没有找到配置文件"
             echo "files=" >> $GITHUB_OUTPUT
           else
             files_one_line=$(echo $files | tr '\n' ' ' | sed 's/  */ /g' | xargs)
-            echo "Found config files: $files_one_line"
+            echo "✅ 找到配置文件: $files_one_line"
             echo "files=$files_one_line" >> $GITHUB_OUTPUT
           fi
 
       - name: Test each config and filter proxies
         run: |
           if [ -z "${{ steps.listfiles.outputs.files }}" ]; then
-            echo "No config files found, skipping."
+            echo "⚠️ 无配置文件可处理，跳过"
             exit 0
           fi
+
           for file in ${{ steps.listfiles.outputs.files }}; do
-            echo "Processing config file: $file"
+            echo "🚀 开始处理: $file"
             base=$(basename "$file" .yaml)
             output_file="output/filtered/${base}_filtered.yaml"
 
-            echo "Running clash-speedtest on $file..."
+            echo "运行 clash-speedtest..."
             clash-speedtest \
               -v \
               -c "$file" \
@@ -82,37 +86,43 @@ jobs:
               -rename
 
             if [ $? -ne 0 ]; then
-              echo "❌ clash-speedtest failed for $file"
+              echo "❌ clash-speedtest 失败: $file"
               continue
             fi
 
             if [ -f "$output_file" ]; then
-              echo "✅ 已成功生成过滤配置文件: $output_file"
+              echo "✅ 成功生成: $output_file"
               cat "$output_file"
             else
-              echo "❌ 未能生成输出文件: $output_file"
+              echo "⚠️ 未生成输出文件: $output_file"
             fi
           done
 
-      - name: Debug: List filtered files
+      - name: Debug List filtered files
         run: |
-          ls -la output/filtered/
-          if [ "$(ls -A output/filtered/*.yaml 2>/dev/null)" ]; then
-            echo "Files exist in output/filtered/"
+          echo "👉 当前 output/filtered/ 内容："
+          ls -la output/filtered/ || echo "⚠️ output/filtered/ 不存在"
+
+          echo "👉 检查是否存在有效的 .yaml..."
+          if find output/filtered/ -maxdepth 1 -name "*.yaml" | grep -q .; then
+            echo "✅ 存在有效的 .yaml 文件："
+            find output/filtered/ -maxdepth 1 -name "*.yaml"
           else
-            echo "⚠️ No valid YAML files in output/filtered/"
+            echo "⚠️ 没有找到任何有效的 .yaml 文件"
           fi
 
       - name: Merge all filtered proxies into merged.yaml
         run: |
-          if ls output/filtered/*_filtered.yaml 1> /dev/null 2>&1; then
-            echo "正在合并所有过滤后的代理配置..."
+          echo "👉 准备合并..."
+          if find output/filtered/ -maxdepth 1 -name "*_filtered.yaml" | grep -q .; then
+            echo "✅ 找到有效的 *_filtered.yaml 文件，开始合并..."
             yq eval-all '. as $item ireduce ({}; .proxies += $item.proxies )' output/filtered/*_filtered.yaml > output/merged.yaml
-            echo "✅ 合并完成，结果写入 output/merged.yaml"
+            echo "✅ 合并完成，输出：output/merged.yaml"
             cat output/merged.yaml
           else
-            echo "⚠️ 没有找到有效的代理文件，生成空的 merged.yaml"
+            echo "⚠️ 没有有效文件，生成空 merged.yaml"
             echo "proxies: []" > output/merged.yaml
+            cat output/merged.yaml
           fi
 
       - name: Commit and Push Merged File
@@ -129,15 +139,15 @@ jobs:
 
           git add output/merged.yaml
           if git diff --cached --quiet; then
-            echo "💡 没有变化，无需提交。"
+            echo "💡 没有更改，不提交"
           else
-            echo "📝 正在提交更改..."
+            echo "📝 提交更改..."
             git commit -m "Auto update output/merged.yaml with valid proxies"
-            echo "📤 正在推送更改到远程仓库..."
+            echo "📤 推送到远程仓库..."
             git push origin HEAD:${{ github.ref_name }}
           fi
 
       - name: Cleanup temporary files
         run: |
-          echo "清理临时文件..."
+          echo "🧹 清理临时文件..."
           rm -rf tmp/ output/filtered/
