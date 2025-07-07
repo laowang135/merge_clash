@@ -68,17 +68,16 @@ jobs:
           for file in ${{ steps.listfiles.outputs.files }}; do
             echo "Processing config file: $file"
             base=$(basename "$file" .yaml)
-            tmpfile=$(mktemp /tmp/clash-output.XXXXXX)
             output_file="output/filtered/${base}_filtered.yaml"
 
             echo "Running clash-speedtest on $file..."
             clash-speedtest \
+              -v \
               -c "$file" \
-              -min-download-speed 0.01 -download-size 10 \
-              -upload-size 10 -min-upload-speed 0.01 \
-              -output "$tmpfile" \
+              -output "$output_file" \
               -server-url "${TEST_SERVER_URL}" \
               -max-latency 3000ms \
+              -min-download-speed 1 \
               -timeout 5s \
               -rename
 
@@ -87,14 +86,22 @@ jobs:
               continue
             fi
 
-            if [ -f "$tmpfile" ]; then
-              mv "$tmpfile" "$output_file"
+            if [ -f "$output_file" ]; then
               echo "✅ 已成功生成过滤配置文件: $output_file"
               cat "$output_file"
             else
               echo "❌ 未能生成输出文件: $output_file"
             fi
           done
+
+      - name: Debug: List filtered files
+        run: |
+          ls -la output/filtered/
+          if [ "$(ls -A output/filtered/*.yaml 2>/dev/null)" ]; then
+            echo "Files exist in output/filtered/"
+          else
+            echo "⚠️ No valid YAML files in output/filtered/"
+          fi
 
       - name: Merge all filtered proxies into merged.yaml
         run: |
@@ -129,3 +136,8 @@ jobs:
             echo "📤 正在推送更改到远程仓库..."
             git push origin HEAD:${{ github.ref_name }}
           fi
+
+      - name: Cleanup temporary files
+        run: |
+          echo "清理临时文件..."
+          rm -rf tmp/ output/filtered/
