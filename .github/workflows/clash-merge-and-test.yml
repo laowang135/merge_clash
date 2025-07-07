@@ -73,12 +73,12 @@ jobs:
 
             echo "Running clash-speedtest on $file..."
             clash-speedtest \
-              -v \
               -c "$file" \
+              -min-download-speed 0.01 -download-size 10 \
+              -upload-size 10 -min-upload-speed 0.01 \
               -output "$tmpfile" \
               -server-url "${TEST_SERVER_URL}" \
               -max-latency 3000ms \
-              -min-download-speed 1 \
               -timeout 5s \
               -rename
 
