@@ -76,12 +76,12 @@ jobs:
 
             echo "运行 clash-speedtest..."
             clash-speedtest \
-              -v \
               -c "$file" \
               -output "$output_file" \
               -server-url "${TEST_SERVER_URL}" \
-              -max-latency 3000ms \
-              -min-download-speed 1 \
+              -max-latency 4000ms \
+              -min-download-speed 0.01 -download-size 10 \
+              -upload-size 10 -min-upload-speed 0.01 \
               -timeout 5s \
               -rename
 
