@@ -18,10 +18,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up working directory
+        run: |
+          echo "当前工作目录：$(pwd)"
+          cd $GITHUB_WORKSPACE
+          echo "已切换到仓库根目录"
+
       - name: Install yq for YAML processing
         run: |
           sudo wget -O /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
+          yq --version
 
       - name: Setup Go environment
         uses: actions/setup-go@v4
@@ -32,16 +39,25 @@ jobs:
         run: |
           go install github.com/faceair/clash-speedtest@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
+          clash-speedtest --help
 
       - name: Prepare output directory
-        run: mkdir -p output/filtered
+        run: |
+          mkdir -p output/filtered
+          echo "output/filtered 目录已创建"
 
       - name: List config YAML files
         id: listfiles
         run: |
           files=$(ls configs/*.yaml 2>/dev/null || echo "")
-          files_one_line=$(echo $files | tr '\n' ' ' | sed 's/  */ /g' | xargs)
-          echo "files=$files_one_line" >> $GITHUB_OUTPUT
+          if [ -z "$files" ]; then
+            echo "No config files found"
+            echo "files=" >> $GITHUB_OUTPUT
+          else
+            files_one_line=$(echo $files | tr '\n' ' ' | sed 's/  */ /g' | xargs)
+            echo "Found config files: $files_one_line"
+            echo "files=$files_one_line" >> $GITHUB_OUTPUT
+          fi
 
       - name: Test each config and filter proxies
         run: |
@@ -50,31 +66,54 @@ jobs:
             exit 0
           fi
           for file in ${{ steps.listfiles.outputs.files }}; do
-            echo "Processing $file"
+            echo "Processing config file: $file"
             base=$(basename "$file" .yaml)
+            tmpfile=$(mktemp /tmp/clash-output.XXXXXX)
+            output_file="output/filtered/${base}_filtered.yaml"
+
+            echo "Running clash-speedtest on $file..."
             clash-speedtest \
+              -v \
               -c "$file" \
-              -output "output/filtered/${base}_filtered.yaml" \
+              -output "$tmpfile" \
               -server-url "${TEST_SERVER_URL}" \
               -max-latency 3000ms \
               -min-download-speed 1 \
               -timeout 5s \
               -rename
+
+            if [ $? -ne 0 ]; then
+              echo "❌ clash-speedtest failed for $file"
+              continue
+            fi
+
+            if [ -f "$tmpfile" ]; then
+              mv "$tmpfile" "$output_file"
+              echo "✅ 已成功生成过滤配置文件: $output_file"
+              cat "$output_file"
+            else
+              echo "❌ 未能生成输出文件: $output_file"
+            fi
           done
 
       - name: Merge all filtered proxies into merged.yaml
         run: |
           if ls output/filtered/*_filtered.yaml 1> /dev/null 2>&1; then
+            echo "正在合并所有过滤后的代理配置..."
             yq eval-all '. as $item ireduce ({}; .proxies += $item.proxies )' output/filtered/*_filtered.yaml > output/merged.yaml
+            echo "✅ 合并完成，结果写入 output/merged.yaml"
+            cat output/merged.yaml
           else
-            echo "No filtered proxy files found. Creating empty merged.yaml."
+            echo "⚠️ 没有找到有效的代理文件，生成空的 merged.yaml"
             echo "proxies: []" > output/merged.yaml
           fi
 
       - name: Commit and Push Merged File
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GIT_ACCESS_TOKEN }}
         run: |
-          git remote set-url origin https://x-access-token:${{ secrets.GIT_ACCESS_TOKEN }}@github.com/${{ github.repository }}
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
           git fetch origin
           git checkout ${{ github.ref_name }}
 
@@ -83,8 +122,10 @@ jobs:
 
           git add output/merged.yaml
           if git diff --cached --quiet; then
-            echo "No changes to commit."
+            echo "💡 没有变化，无需提交。"
           else
+            echo "📝 正在提交更改..."
             git commit -m "Auto update output/merged.yaml with valid proxies"
+            echo "📤 正在推送更改到远程仓库..."
             git push origin HEAD:${{ github.ref_name }}
           fi
