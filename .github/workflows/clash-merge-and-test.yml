@@ -74,7 +74,7 @@ jobs:
       - name: Commit and Push Merged File
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+          git remote set-url origin https://x-access-token:${{ secrets.GIT_ACCESS_TOKEN }}@github.com/${{ github.repository }}
           git fetch origin
           git checkout ${{ github.ref_name }}
 
@@ -82,5 +82,9 @@ jobs:
           git config --local user.name "GitHub Action"
 
           git add output/merged.yaml
-          git diff --cached --quiet || git commit -m "Auto update output/merged.yaml with valid proxies"
-          git push origin HEAD:${{ github.ref_name }}
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Auto update output/merged.yaml with valid proxies"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
